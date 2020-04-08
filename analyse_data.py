@@ -1,9 +1,13 @@
 import pandas as pd
+import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_absolute_error, matthews_corrcoef, accuracy_score
+from sklearn.metrics import mean_absolute_error, matthews_corrcoef, accuracy_score, recall_score, roc_curve, auc, \
+    precision_score
 from sklearn.ensemble import IsolationForest
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.utils import resample
 
 from tsfresh import extract_features, extract_relevant_features, select_features
 from tsfresh.utilities.dataframe_functions import impute
@@ -13,94 +17,106 @@ from xgboost import XGBRFClassifier
 import xgboost as xgb
 import optuna
 import functools
+import eli5
+from eli5.sklearn import PermutationImportance
+import shap
 
 import numpy as np
 
-if __name__ == '__main__':
+# Import Data
+X_test = pd.read_csv("input/X_test.csv")
+X = pd.read_csv("input/X.csv")
+y = pd.read_csv("input/y.csv", squeeze=True)
+X_test_filtered = pd.DataFrame(X_test).iloc[:, [173, 141, 530, 683, 661, 498, 48, 183, 206, 716, 697, 185, 211, 624, 671, 623, 67, 111, 118, 129]]
 
-    # Import Data
+# train_metadata = pd.read_csv('input/metadata_train.csv')  # read train data
+test_metadata = pd.read_csv('input/metadata_test.csv')  # read train data
 
-    X_test = pd.read_csv("input/X_test.csv")
-    print(X_test.shape)
-    X = pd.read_csv("input/X.csv")
-    print(X.shape)
-    y = pd.read_csv("input/y.csv", squeeze=True)
-    print(y.shape)
+def ROC_curve(y_test, y_score):
+    # Compute ROC curve and ROC area for each class
 
-    train_metadata = pd.read_csv('input/metadata_train.csv')  # read train data
-    test_metadata = pd.read_csv('input/metadata_test.csv')  # read train data
+    fpr, tpr, _ = roc_curve(y_test, y_score)
+    roc_auc = auc(fpr, tpr)
 
-
-    def ML_model(X_train, X_valid, y_train, y_valid):
-        my_model = XGBRFClassifier(random_state=1, scale_pos_weight=17)
-        my_model.fit(X_train, y_train)
-        predictions = pd.Series(my_model.predict(X_valid))
-
-        if not y_valid.empty:
-            print("Mean Absolute Error: " + str(mean_absolute_error(y_valid, predictions)))
-            print("Matthews correlation coefficient: " + str(matthews_corrcoef(y_valid, predictions)))
-
-        return predictions
+    plt.figure()
+    lw = 2
+    plt.plot(fpr, tpr, color='darkorange',
+             lw=lw, label='ROC curve (area = %0.2f)' % roc_auc)
+    plt.plot([0, 1], [0, 1], color='navy', lw=lw, linestyle='--')
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('Receiver operating characteristic example')
+    plt.legend(loc="lower right")
+    plt.show()
 
 
-    X_train, X_valid, y_train, y_valid = train_test_split(X, y, test_size=.2, stratify=y,
-                                                          random_state=1)  # split X, y into 80% train 20% valid
+X_train, X_val, y_train, y_val = train_test_split(X, y, random_state=1, test_size=0.35)
 
-    my_imputer = SimpleImputer(strategy="median")
-    my_imputer.fit(X_train)
-    scaler = StandardScaler()
-    scaler.fit(X_train)
+scaler = StandardScaler()
+X_train = scaler.fit_transform(X_train)
+X_val = scaler.transform(X_val)
 
-    X_train = pd.DataFrame(scaler.transform(my_imputer.transform(X_train)))
-    X_valid = pd.DataFrame(scaler.transform(my_imputer.transform(X_valid)))
+# # combine them back for resampling
+# train_data = pd.concat([pd.DataFrame(X_train), pd.DataFrame(y_train)], axis=1)
+#
+# # separate minority and majority classes
+# negative = train_data[train_data.target == 0]
+# positive = train_data[train_data.target == 1]
+#
+# # downsample majority
+# neg_downsampled = resample(negative,
+#                            replace=True,  # sample with replacement
+#                            n_samples=len(positive),  # match number in minority class
+#                            random_state=27)  # reproducible results
+# # combine minority and downsampled majority
+# downsampled = pd.concat([positive, neg_downsampled]).dropna()
+# check new class counts
+#
+# X_train = pd.DataFrame(downsampled.drop(columns="target"), index=downsampled.index)
+# y_train = pd.Series(downsampled["target"], index=downsampled.index)
 
-    # -----------------------------------
-    prediction = ML_model(X_train, X_valid, y_train, y_valid)
+my_model = XGBRFClassifier(random_state=1).fit(X_train, y_train)
 
-    # <<< Select relevant features >>> #
+predictions = my_model.predict(X_val)
 
-    # y_train.reset_index(drop=True, inplace=True)
-    #
-    # print(X_train.shape)
-    # print(y_train.shape)
-    #
-    # X_train_filtered = select_features(X_train, y_train)
-    # print("Number of relevant features {}/{}".format(X_train_filtered.shape[1], X_train.shape[1]))
-    #
-    X_test.columns = X_valid.columns  # rename X_test columns to X_valid column names
-    #
-    # X_valid = X_valid[X_train_filtered.columns]
-    #
-    # X_test = X_test[X_train_filtered.columns]
-    #
-    # prediction_filtered = ML_model(X_train_filtered, X_valid, y_train, y_valid)
+print("Matthews Correlation Coefficient: " + str(matthews_corrcoef(predictions, y_val)))
+print("Precision Score: " + str(precision_score(predictions, y_val)))
+print("Recall Score: " + str(recall_score(predictions, y_val)))
+ROC_curve(y_val, predictions)
 
-    test_prediction = ML_model(X_train, X_test, y_train, pd.DataFrame(data=None))
+X_train_filtered = pd.DataFrame(X_train).iloc[:, [173, 141, 530, 683, 661, 498, 48, 183, 206, 716, 697, 185, 211, 624, 671, 623, 67, 111, 118, 129]]
+X_val_filtered = pd.DataFrame(X_val).iloc[:, [173, 141, 530, 683, 661, 498, 48, 183, 206, 716, 697, 185, 211, 624, 671, 623, 67, 111, 118, 129]]
 
-    output = pd.DataFrame({'signal_id': test_metadata["signal_id"],
+my_model_filtered = XGBRFClassifier(**{'n_estimators': 610, 'max_depth': 14, 'min_child_weight': 10, 'scale_pos_weight': 84, 'subsample': 0.8, 'colsample_bytree': 0.8}).fit(X_train_filtered, y_train)
+
+predictions_filtered = my_model_filtered.predict(X_val_filtered)
+
+print("Matthews Correlation Coefficient: " + str(matthews_corrcoef(predictions_filtered, y_val)))
+print("Precision Score: " + str(precision_score(predictions_filtered, y_val)))
+print("Recall Score: " + str(recall_score(predictions_filtered, y_val)))
+ROC_curve(y_val, predictions_filtered)
+
+X_test_filtered.columns = X_train_filtered.columns
+
+test_prediction = my_model_filtered.predict(X_test_filtered)
+
+# prediction = PermutationImportance(my_model, random_state=1).fit(X_val, y_val)
+#
+# df_eli = eli5.format_as_dataframe(eli5.explain_weights(prediction))  # , feature_names=X_val.columns.tolist()
+# df_eli.to_csv("output/eli.csv")
+#
+# # Create object that can calculate shap values
+# explainer = shap.TreeExplainer(my_model)
+#
+# # calculate shap values. This is what we will plot.
+# # Calculate shap_values for all of val_X rather than a single row, to have more data for plot.
+# shap_values = explainer.shap_values(X_val)
+#
+# # Make plot. Index of [1] is explained in text below.
+# shap.summary_plot(shap_values[1], X_val)
+#
+output = pd.DataFrame({'signal_id': test_metadata["signal_id"],
                        'target': test_prediction})
-
-    output.to_csv('output/submission_2.csv', index=False)
-
-    # <<< Hyper parameter optimisation >>> #
-
-    # best_params = {'n_estimators': 949, 'max_depth': 18, 'min_child_weight': 4,
-    #                'scale_pos_weight': 10, 'subsample': 0.7, 'colsample_bytree': 0.5}
-    #
-    # clf = xgb.XGBClassifier(**best_params)
-    # clf.fit(X_train, y_train)
-    # predictions_hyper_par = pd.Series(clf.predict(X_valid))
-    #
-    # print("Mean Absolute Error: " + str(mean_absolute_error(y_valid, predictions_hyper_par)))
-    # print("Matthews correlation coefficient: " + str(matthews_corrcoef(y_valid, predictions_hyper_par)))
-    #
-    # # <<< To improve accuracy, create a new  model which you will train on all training data >>> #
-    #
-    #
-    #
-    # test_prediction = pd.Series(clf.predict(X_test))
-    #
-    # output = pd.DataFrame({'signal_id': test_metadata["signal_id"],
-    #                        'target': test_prediction})
-    #
-    # output.to_csv('output/submission.csv', index=False)
+output.to_csv('output/submission_3.csv', index=False)
